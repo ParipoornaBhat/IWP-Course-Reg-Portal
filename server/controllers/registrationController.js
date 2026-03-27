@@ -1,6 +1,7 @@
 const Course = require("../models/Course");
 const Registration = require("../models/Registration");
 const User = require("../models/User");
+const mongoose = require("mongoose");
 
 /**
  * Convert "HH:MM" to total minutes for easy comparison
@@ -138,10 +139,22 @@ const getMyRegistrations = async (req, res) => {
 const getStudentsInCourse = async (req, res) => {
   try {
     const courseId = req.params.id;
-    const registrations = await Registration.find({ courses: courseId }).populate("student", "name username studentId");
-    const students = registrations.map((r) => r.student);
+    console.log(`[DEBUG] Fetching students for course: ${courseId}`);
+    
+    // Use ObjectId explicitly to ensure correct matching
+    const registrations = await Registration.find({ 
+      courses: new mongoose.Types.ObjectId(courseId) 
+    }).populate("student", "name username studentId");
+    
+    console.log(`[DEBUG] Found ${registrations.length} registrations`);
+    const students = registrations
+      .map((r) => r.student)
+      .filter(s => s !== null);
+      
+    console.log(`[DEBUG] Final student list count: ${students.length}`);
     res.json(students);
   } catch (err) {
+    console.error(`[ERROR] getStudentsInCourse: ${err.message}`);
     res.status(500).json({ message: err.message });
   }
 };
@@ -153,14 +166,26 @@ const getStudentsInCourse = async (req, res) => {
 const addStudentToCourse = async (req, res) => {
   try {
     const courseId = req.params.id;
-    const { studentId } = req.body; // Explicit Student ID (e.g. STU001)
+    const { studentId } = req.body;
+    console.log(`[DEBUG] Adding student ${studentId} to course ${courseId}`);
 
     if (!studentId) return res.status(400).json({ message: "Student ID required." });
 
-    const student = await User.findOne({ studentId: studentId.toUpperCase(), role: "student" });
-    if (!student) return res.status(404).json({ message: "Student not found." });
+    const student = await User.findOne({ 
+      $or: [
+        { studentId: studentId.toUpperCase() },
+        { studentId: studentId.toLowerCase() },
+        { studentId: studentId }
+      ], 
+      role: "student" 
+    });
 
-    const course = await Course.findById(courseId);
+    if (!student) {
+      console.log(`[DEBUG] Student ${studentId} not found in database`);
+      return res.status(404).json({ message: "Student not found." });
+    }
+
+    const course = await Course.findById(new mongoose.Types.ObjectId(courseId));
     if (!course) return res.status(404).json({ message: "Course not found." });
 
     if (course.enrolledSeats >= course.totalSeats) {
@@ -169,28 +194,33 @@ const addStudentToCourse = async (req, res) => {
 
     let registration = await Registration.findOne({ student: student._id }).populate("courses");
     if (registration) {
-      if (registration.courses.some((c) => c._id.equals(courseId))) {
+      console.log(`[DEBUG] Student ${student._id} already has a registration record`);
+      if (registration.courses.some((c) => c._id.toString() === courseId.toString())) {
         return res.status(400).json({ message: "Student is already registered for this course." });
       }
       
-      // Check for clashes
       const merged = [...registration.courses, course];
       const clashes = detectClashes(merged);
       if (clashes.length > 0) {
-        return res.status(400).json({ message: "Student have a schedule clash with this course.", clashes });
+        console.log(`[DEBUG] Schedule clash detected for student ${studentId}`);
+        return res.status(400).json({ message: "Student has a schedule clash with this course.", clashes });
       }
 
-      registration.courses.push(courseId);
+      registration.courses.push(new mongoose.Types.ObjectId(courseId));
       await registration.save();
+      console.log(`[DEBUG] Added course ${courseId} to existing registration for student ${studentId}`);
     } else {
-      await Registration.create({ student: student._id, courses: [courseId] });
+      await Registration.create({ student: student._id, courses: [new mongoose.Types.ObjectId(courseId)] });
+      console.log(`[DEBUG] Created new registration for student ${studentId} with course ${courseId}`);
     }
 
     course.enrolledSeats += 1;
     await course.save();
+    console.log(`[DEBUG] Incremented enrolledSeats for course ${courseId}. New count: ${course.enrolledSeats}`);
 
     res.json({ message: "Student added successfully.", student: { _id: student._id, name: student.name, studentId: student.studentId } });
   } catch (err) {
+    console.error(`[ERROR] addStudentToCourse: ${err.message}`);
     res.status(500).json({ message: err.message });
   }
 };
@@ -204,14 +234,17 @@ const removeStudentFromCourse = async (req, res) => {
     const { id: courseId, userId } = req.params;
 
     const registration = await Registration.findOne({ student: userId });
-    if (!registration || !registration.courses.includes(courseId)) {
+    
+    // Use .some() with .toString() for robust array check
+    if (!registration || !registration.courses.some(c => c.toString() === courseId)) {
+      console.log(`[DEBUG] Registration not found for user ${userId} in course ${courseId}`);
       return res.status(404).json({ message: "Student is not registered for this course." });
     }
 
     registration.courses = registration.courses.filter((c) => c.toString() !== courseId);
     await registration.save();
 
-    await Course.findByIdAndUpdate(courseId, { $inc: { enrolledSeats: -1 } });
+    await Course.findByIdAndUpdate(new mongoose.Types.ObjectId(courseId), { $inc: { enrolledSeats: -1 } });
 
     res.json({ message: "Student removed successfully." });
   } catch (err) {

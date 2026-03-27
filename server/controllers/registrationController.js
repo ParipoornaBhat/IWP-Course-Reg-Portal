@@ -1,5 +1,6 @@
 const Course = require("../models/Course");
 const Registration = require("../models/Registration");
+const User = require("../models/User");
 
 /**
  * Convert "HH:MM" to total minutes for easy comparison
@@ -112,6 +113,19 @@ const registerCourses = async (req, res) => {
     );
 
     res.status(201).json({ message: "Registration successful." });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/**
+ * GET /api/register/me (Student only)
+ * Get all courses registered by the logged-in student
+ */
+const getMyRegistrations = async (req, res) => {
+  try {
+    const reg = await Registration.findOne({ student: req.user.id }).populate("courses");
+    res.json(reg?.courses || []);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
